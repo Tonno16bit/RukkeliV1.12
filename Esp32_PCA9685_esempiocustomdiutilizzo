@@ -1,0 +1,40 @@
+
+/* questa versione usa direttamente le frequenze PWM per muovere i servomotori
+scritta da Antonio Obaid il 17-01-2025 
+per favore quando fate modifiche scrivete cosa avete corretto dopo aver premuto "Commit changes..." e mettete il vostro nome */
+
+
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);
+#define SERVOMIN 80
+#define SERVOMAX 600
+#define SDA_PIN 7
+#define SCL_PIN 6
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("inizializzazione");
+  Wire.begin(SDA_PIN,SCL_PIN);
+  pwm.begin();
+  Serial.println("Inizializzato PCA9685 con SDA pin " + String(SDA_PIN) + " ed SCL pin " + String(SCL_PIN));
+  pwm.setOscillatorFrequency(27000000);
+  pwm.setPWMFreq(50);
+  Serial.println("inizializzata la frequenza PWM a 50Hz e frequenza dell'oscillatore al quarzo ESTERNO a 27MHz")
+}
+
+void loop() {
+  Serial.println("Movimento relativo a servo 9");
+  for (uint16_t pulselen = SERVOMIN; pulselen < SERVOMAX; pulselen++) {
+    pwm.setPWM(9, 0, pulselen);
+  }
+
+  delay(500);
+  for (uint16_t pulselen = SERVOMAX; pulselen > SERVOMIN; pulselen--) {
+    pwm.setPWM(9, 0, pulselen);
+  }
+
+  delay(500);
+
+}

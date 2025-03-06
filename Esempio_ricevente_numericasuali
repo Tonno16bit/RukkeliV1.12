@@ -1,5 +1,7 @@
 /*
 esempio scritto con Copilot da A.O. il 06/03/2025
+viene utilizzata la libreria U8G2 in quanto la sostituzione dello schermo SSD1306 
+con un altro schermo risulta più semplice ed immediata in un secondo momento
 per favore quando fate modifiche scrivete cosa avete corretto dopo aver premuto "Commit changes..." e mettete il vostro nome 
 da revisionare
 */

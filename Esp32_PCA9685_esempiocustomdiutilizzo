@@ -1,7 +1,9 @@
 
 /* questa versione usa direttamente le frequenze PWM per muovere i servomotori
 scritta da Antonio Obaid il 17-01-2025 
-per favore quando fate modifiche scrivete cosa avete corretto dopo aver premuto "Commit changes..." e mettete il vostro nome */
+per favore quando fate modifiche scrivete cosa avete corretto dopo aver premuto "Commit changes..." e mettete il vostro nome 
+già revisionato
+*/
 
 
 #include <Wire.h>

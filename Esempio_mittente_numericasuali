@@ -1,0 +1,67 @@
+#include <esp_now.h>
+#include <WiFi.h>
+#include <Arduino.h>
+
+#define NUM_VALUES 16  // Numero di valori casuali da inviare
+
+// Sostituire con l'indirizzo MAC del tuo ricevitore
+uint8_t receiverMAC[] = {0x24, 0x0A, 0xC4, 0x5F, 0x6D, 0xB8};
+
+// Definire la struttura per contenere i valori casuali
+typedef struct struct_message {
+  int values[NUM_VALUES];
+} struct_message;
+
+// Creare un'istanza della struttura
+struct_message myData;
+
+// Callback quando i dati vengono inviati
+void onSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  Serial.print("Stato dell'ultimo pacchetto inviato: ");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Consegna riuscita" : "Consegna fallita");
+}
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Impostare il dispositivo come stazione Wi-Fi
+  WiFi.mode(WIFI_STA);
+
+  // Inizializzare ESP-NOW
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Errore nell'inizializzazione di ESP-NOW");
+    return;
+  }
+
+  // Registrare la callback di invio
+  esp_now_register_send_cb(onSent);
+
+  // Registrare il peer
+  esp_now_peer_info_t peerInfo;
+  memcpy(peerInfo.peer_addr, receiverMAC, 6);
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("Aggiunta del peer fallita");
+    return;
+  }
+}
+
+void loop() {
+  // Generare 16 numeri casuali
+  for (int i = 0; i < NUM_VALUES; i++) {
+    myData.values[i] = random(0, 100); // Numeri casuali tra 0 e 99
+  }
+
+  // Inviare il messaggio tramite ESP-NOW
+  esp_err_t result = esp_now_send(receiverMAC, (uint8_t *) &myData, sizeof(myData));
+  
+  if (result == ESP_OK) {
+    Serial.println("Messaggio inviato con successo");
+  } else {
+    Serial.println("Errore nell'invio del messaggio");
+  }
+  
+  delay(2000); // Inviare il messaggio ogni 2 secondi
+}

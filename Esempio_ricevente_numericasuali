@@ -1,0 +1,58 @@
+#include <esp_now.h>
+#include <WiFi.h>
+#include <U8g2lib.h>
+
+#define NUM_VALUES 16  // Numero di valori casuali da ricevere
+
+// Configurazione del display OLED con U8g2
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// Definire la struttura per contenere i valori casuali
+typedef struct struct_message {
+  int values[NUM_VALUES];
+} struct_message;
+
+// Creare un'istanza della struttura
+struct_message myData;
+
+// Callback quando i dati vengono ricevuti
+void onReceive(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
+  // Copiare i dati in ingresso nella struttura myData
+  memcpy(&myData, incomingData, sizeof(myData));
+  Serial.println("Messaggio ricevuto:");
+
+  // Visualizzare i valori sull'OLED
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  for (int i = 0; i < NUM_VALUES; i++) {
+    u8g2.setCursor(0, (i + 1) * 8);
+    u8g2.print("Val ");
+    u8g2.print(i + 1);
+    u8g2.print(": ");
+    u8g2.print(myData.values[i]);
+  }
+  u8g2.sendBuffer();
+}
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Inizializzare OLED
+  u8g2.begin();
+
+  // Impostare il dispositivo come stazione Wi-Fi
+  WiFi.mode(WIFI_STA);
+
+  // Inizializzare ESP-NOW
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Errore nell'inizializzazione di ESP-NOW");
+    return;
+  }
+
+  // Registrare la callback di ricezione
+  esp_now_register_recv_cb(onReceive);
+}
+
+void loop() {
+  // Nulla da fare qui, tutto è gestito nella callback onReceive
+}

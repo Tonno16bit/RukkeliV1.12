@@ -1,3 +1,9 @@
+/*
+esempio scritto con Copilot da A.O. il 06/03/2025
+da revisionare
+*/
+
+
 #include <esp_now.h>
 #include <WiFi.h>
 #include <Arduino.h>

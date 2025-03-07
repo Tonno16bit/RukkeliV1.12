@@ -1,0 +1,421 @@
+#include <WiFi.h>
+#include <esp_now.h>
+#include <Wire.h>
+#include <U8g2lib.h>
+#include <ESP32Encoder.h>
+
+// ==========================================================
+// PIN ASSIGNMENTS
+// ==========================================================
+// Multiplexer for 16 potentiometers:
+const int MUX_S0 = 15;        // Control pin S0
+const int MUX_S1 = 16;        // Control pin S1
+const int MUX_S2 = 17;        // Control pin S2
+const int MUX_S3 = 18;        // Control pin S3
+const int MUX_SIG = 8;        // Analog input (common output)
+
+// Rotary Encoder – using ESP32Encoder library:
+#define ENC_A    19         // Encoder Channel A
+#define ENC_B    20         // Encoder Channel B
+const int ENC_BTN = 21;      // Encoder button (active LOW)
+
+// OLED (SSD1306 128x64 via I2C):
+const int OLED_SDA = 47;     // I2C SDA
+const int OLED_SCL = 48;     // I2C SCL
+
+// ==========================================================
+// PROJECT CONFIGURATION & GLOBAL VARIABLES
+// ==========================================================
+#define NUM_CHANNELS       16            // 16 potentiometers via multiplexer
+#define MAX_RECORD_SAMPLES 500           // Max samples stored when recording
+#define RECORD_INTERVAL    100           // Recording interval in milliseconds
+
+// Create OLED instance (SSD1306 128x64) – hardware I2C mode:
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(
+  U8G2_R0,       // Rotation
+  U8X8_PIN_NONE, // No reset pin used
+  OLED_SCL, OLED_SDA
+);
+
+// --- Potentiometer processing ---
+uint16_t smoothedValues[NUM_CHANNELS];
+bool firstReading[NUM_CHANNELS];
+float emaAlpha = 0.1;          // Exponential moving average factor (adjustable)
+
+// --- Recording buffer structure ---
+struct RecordingSample {
+  uint16_t values[NUM_CHANNELS];
+  uint32_t timestamp;
+};
+RecordingSample recordingBuffer[MAX_RECORD_SAMPLES];
+int recordingIndex = 0;        // Index into the recording buffer
+
+// --- Operational state ---
+bool liveTxEnabled = false;    // Live transmission flag
+
+enum RecordingState { RECORD_NOT, RECORD_ACTIVE, RECORD_PAUSED, RECORD_READY };
+RecordingState recordingState = RECORD_NOT;
+
+// --- Menu system ---
+// Menu items: Live Transmission, Recording, and Smoothing
+enum MenuItem { MENU_LIVE_TX, MENU_RECORD, MENU_SMOOTHING, MENU_COUNT };
+int currentMenu = 0;   // Which menu item is currently selected
+// UI state: normal menu vs. parameter adjustment mode (for smoothing)
+enum UIState { UI_MENU, UI_SMOOTHING_ADJUSTMENT };
+UIState uiState = UI_MENU;
+
+// --- Error overlay ---
+bool errorActive = false;
+String errorMsg = "";
+
+// --- Timing variables ---
+unsigned long lastRecordTime = 0;
+
+// --- Encoder using ESP32Encoder library ---
+ESP32Encoder encoder;
+long lastMenuDetent = 0;       // Last detent count used in UI_MENU
+long lastSmoothingDetent = 0;  // Last detent count in UI_SMOOTHING_ADJUSTMENT
+
+// --- ESP‑NOW configuration ---
+uint8_t peerMAC[6] = {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0xCC};  // Replace with actual peer MAC
+
+// Packet structure for transmitting potentiometer data.
+struct PotPacket {
+  uint8_t  packetType;       // 0 = live, 1 = recording sample
+  uint16_t values[NUM_CHANNELS];
+  uint32_t timestamp;
+  uint16_t sampleIndex;      // For recording packets
+  uint16_t totalSamples;     // For recording packets
+};
+
+// ==========================================================
+// FUNCTION PROTOTYPES
+// ==========================================================
+void updateMultiplexerReadings();
+void selectMultiplexerChannel(uint8_t channel);
+void updateMenu();
+void drawUI();
+void handleEncoderButton();
+void clearError();
+void sendLivePacket();
+void sendRecordingPacket(const RecordingSample &sample, uint16_t sampleIndex, uint16_t totalSamples);
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
+
+// ==========================================================
+// SETUP
+// ==========================================================
+void setup() {
+  // --- Multiplexer pins ---
+  pinMode(MUX_S0, OUTPUT);
+  pinMode(MUX_S1, OUTPUT);
+  pinMode(MUX_S2, OUTPUT);
+  pinMode(MUX_S3, OUTPUT);
+  digitalWrite(MUX_S0, LOW);
+  digitalWrite(MUX_S1, LOW);
+  digitalWrite(MUX_S2, LOW);
+  digitalWrite(MUX_S3, LOW);
+  
+  // --- Encoder button ---
+  pinMode(ENC_BTN, INPUT_PULLUP);
+  
+  // --- Initialize OLED ---
+  Wire.begin(OLED_SDA, OLED_SCL);
+  u8g2.begin();
+  
+  // --- ESP‑NOW initialization ---
+  WiFi.mode(WIFI_STA);
+  if (esp_now_init() != ESP_OK) {
+    errorMsg = "ESP-NOW init error";
+    errorActive = true;
+  }
+  esp_now_register_send_cb(OnDataSent);
+  
+  // Add peer information
+  esp_now_peer_info_t peerInfo;
+  memcpy(peerInfo.peer_addr, peerMAC, 6);
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    errorMsg = "Failed to add peer";
+    errorActive = true;
+  }
+  
+  // --- Initialize potentiometer readings ---
+  for (int i = 0; i < NUM_CHANNELS; i++) {
+    firstReading[i] = true;
+    smoothedValues[i] = 0;
+  }
+  
+  // --- Initialize encoder (using ESP32Encoder library) ---
+  // Enable internal weak pull-ups:
+  ESP32Encoder::useInternalWeakPullResistors = puType::up;
+  // Attach the encoder pins in full quadrature mode.
+  encoder.attachFullQuad(ENC_A, ENC_B);
+  encoder.clearCount();
+  lastMenuDetent = encoder.getCount() / 4;  // Expected to be 0 at start
+  lastSmoothingDetent = 0;
+  
+  // --- Welcome screen ---
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  u8g2.drawStr(0, 20, "Initializing...");
+  u8g2.sendBuffer();
+  delay(1000);
+}
+
+// ==========================================================
+// MAIN LOOP
+// ==========================================================
+void loop() {
+  // --- Update menu based on encoder detent movement ---
+  updateMenu();
+  
+  // --- Check if the encoder button is pressed (active LOW) ---
+  if (digitalRead(ENC_BTN) == LOW) {
+    handleEncoderButton();
+    delay(200);  // Basic delay debounce for button press
+  }
+  
+  // --- Update potentiometer readings via multiplexer ---
+  updateMultiplexerReadings();
+  
+  // --- Handle live ESP‑NOW transmission ---
+  if (liveTxEnabled) {
+    sendLivePacket();
+  }
+  
+  // --- Recording: capture data at fixed intervals when active ---
+  unsigned long now = millis();
+  if (recordingState == RECORD_ACTIVE && (now - lastRecordTime >= RECORD_INTERVAL)) {
+    if (recordingIndex < MAX_RECORD_SAMPLES) {
+      for (int i = 0; i < NUM_CHANNELS; i++) {
+        recordingBuffer[recordingIndex].values[i] = smoothedValues[i];
+      }
+      recordingBuffer[recordingIndex].timestamp = now;
+      recordingIndex++;
+    } else {
+      recordingState = RECORD_READY;
+      errorMsg = "Recording full";
+      errorActive = true;
+    }
+    lastRecordTime = now;
+  }
+  
+  // --- Draw the UI on the OLED ---
+  drawUI();
+  
+  delay(10);  // Short pace delay
+}
+
+// ==========================================================
+// FUNCTION IMPLEMENTATIONS
+// ==========================================================
+
+// Read all multiplexer channels and update smoothed (EMA) values.
+void updateMultiplexerReadings() {
+  for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+    selectMultiplexerChannel(ch);
+    delayMicroseconds(5);  // Allow signal to settle
+    uint16_t reading = analogRead(MUX_SIG);
+    if (firstReading[ch]) {
+      smoothedValues[ch] = reading;
+      firstReading[ch] = false;
+    } else {
+      smoothedValues[ch] = emaAlpha * reading + (1 - emaAlpha) * smoothedValues[ch];
+    }
+  }
+}
+
+// Set the HP4067 multiplexer channel (0 to 15)
+void selectMultiplexerChannel(uint8_t channel) {
+  digitalWrite(MUX_S0, channel & 0x01);
+  digitalWrite(MUX_S1, (channel >> 1) & 0x01);
+  digitalWrite(MUX_S2, (channel >> 2) & 0x01);
+  digitalWrite(MUX_S3, (channel >> 3) & 0x01);
+}
+
+// Update menu navigation or smoothing adjustment based on encoder detents.
+void updateMenu() {
+  long currentDetent = encoder.getCount() / 4; // Convert raw ticks to detents
+  if (uiState == UI_MENU) {
+    int delta = (int)(currentDetent - lastMenuDetent);
+    if (delta != 0) {
+      currentMenu += delta;
+      if (currentMenu < 0) currentMenu = MENU_COUNT - 1;
+      else if (currentMenu >= MENU_COUNT) currentMenu = currentMenu % MENU_COUNT;
+      lastMenuDetent = currentDetent;
+    }
+  }
+  else if (uiState == UI_SMOOTHING_ADJUSTMENT) {
+    int delta = (int)(currentDetent - lastSmoothingDetent);
+    if (delta != 0) {
+      emaAlpha += delta * 0.01;  // Adjust smoothing factor stepwise
+      if (emaAlpha < 0.01) emaAlpha = 0.01;
+      if (emaAlpha > 0.5)  emaAlpha = 0.5;
+      lastSmoothingDetent = currentDetent;
+    }
+  }
+}
+
+// Handle encoder button press actions (menu selections, error clearing, etc.)
+void handleEncoderButton() {
+  // If an error overlay is active, clear it.
+  if (errorActive) {
+    clearError();
+    return;
+  }
+  
+  // For the Smoothing menu, toggle between menu and adjustment modes.
+  if (currentMenu == MENU_SMOOTHING) {
+    if (uiState == UI_MENU) {
+      uiState = UI_SMOOTHING_ADJUSTMENT;
+      encoder.clearCount();       // Reset encoder count for fresh adjustment
+      lastSmoothingDetent = 0;
+    } else {
+      uiState = UI_MENU;
+      encoder.clearCount();
+      lastMenuDetent = 0;
+    }
+    return;
+  }
+  
+  // Process other menu selections.
+  switch (currentMenu) {
+    case MENU_LIVE_TX:
+      liveTxEnabled = !liveTxEnabled;
+      break;
+    case MENU_RECORD:
+      if (recordingState == RECORD_NOT) {
+        recordingState = RECORD_ACTIVE;
+        recordingIndex = 0;  // Clear previous recording data
+      } else if (recordingState == RECORD_ACTIVE) {
+        recordingState = RECORD_PAUSED;
+      } else if (recordingState == RECORD_PAUSED) {
+        recordingState = RECORD_ACTIVE;
+      } else if (recordingState == RECORD_READY) {
+        // Transmit all recorded samples via ESP‑NOW.
+        for (int i = 0; i < recordingIndex; i++) {
+          sendRecordingPacket(recordingBuffer[i], i, recordingIndex);
+          delay(5);  // Small delay between packets
+        }
+        recordingState = RECORD_NOT;
+        recordingIndex = 0;
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+// Clear the error overlay.
+void clearError() {
+  errorActive = false;
+  errorMsg = "";
+}
+
+// Draw the user interface on the OLED.
+// The header and footer instructions have been removed per request.
+void drawUI() {
+  u8g2.clearBuffer();
+  
+  // ---- Menu Items ----
+  u8g2.setFont(u8g2_font_6x10_tr);
+  int menuStartY = 12;
+  int menuItemHeight = 12;
+  
+  for (int i = 0; i < MENU_COUNT; i++) {
+    int itemY = menuStartY + i * menuItemHeight;
+    if (i == currentMenu && uiState == UI_MENU) {
+      u8g2.drawBox(0, itemY - 10, 128, menuItemHeight);
+      u8g2.setDrawColor(0);  // Inverse text color
+    } else {
+      u8g2.setDrawColor(1);
+    }
+    
+    switch (i) {
+      case MENU_LIVE_TX: {
+          String liveText = "Live Tx: ";
+          liveText += (liveTxEnabled ? "ON" : "OFF");
+          u8g2.drawStr(4, itemY, liveText.c_str());
+        }
+        break;
+      case MENU_RECORD: {
+          String recText = "Recording: ";
+          switch(recordingState) {
+            case RECORD_NOT:   recText += "OFF"; break;
+            case RECORD_ACTIVE: recText += "ACTIVE"; break;
+            case RECORD_PAUSED: recText += "PAUSED"; break;
+            case RECORD_READY:  recText += "READY"; break;
+          }
+          u8g2.drawStr(4, itemY, recText.c_str());
+        }
+        break;
+      case MENU_SMOOTHING: {
+          String smoothText = "Smoothing: ";
+          smoothText += String(emaAlpha, 2);
+          if (uiState == UI_SMOOTHING_ADJUSTMENT) {
+              smoothText += " [ADJ]";
+          }
+          u8g2.drawStr(4, itemY, smoothText.c_str());
+        }
+        break;
+    }
+  }
+  
+  // ---- Additional Info: Show one channel reading as example ----
+  int extraY = menuStartY + MENU_COUNT * menuItemHeight + 10;
+  String channelText = "Ch0: " + String(smoothedValues[0]);
+  u8g2.drawStr(0, extraY, channelText.c_str());
+  
+  // ---- Error Overlay (if active) ----
+  if (errorActive) {
+    u8g2.setDrawColor(1);
+    u8g2.drawBox(0, 44, 128, 20);
+    u8g2.setDrawColor(0);
+    u8g2.drawStr(5, 59, errorMsg.c_str());
+    u8g2.setDrawColor(1);
+  }
+  
+  u8g2.sendBuffer();
+}
+
+// Transmit a live ESP‑NOW packet with the current potentiometer readings.
+void sendLivePacket() {
+  PotPacket packet;
+  packet.packetType = 0;  // Live transmission type
+  for (int i = 0; i < NUM_CHANNELS; i++) {
+    packet.values[i] = smoothedValues[i];
+  }
+  packet.timestamp = millis();
+  packet.sampleIndex = 0;
+  packet.totalSamples = 0;
+  
+  esp_err_t result = esp_now_send(peerMAC, (uint8_t *)&packet, sizeof(packet));
+  if (result != ESP_OK) {
+    errorMsg = "ESP-NOW live send error";
+    errorActive = true;
+  }
+}
+
+// Transmit a recorded sample via ESP‑NOW.
+void sendRecordingPacket(const RecordingSample &sample, uint16_t sampleIndex, uint16_t totalSamples) {
+  PotPacket packet;
+  packet.packetType = 1;  // Recording sample type
+  for (int i = 0; i < NUM_CHANNELS; i++) {
+    packet.values[i] = sample.values[i];
+  }
+  packet.timestamp = sample.timestamp;
+  packet.sampleIndex = sampleIndex;
+  packet.totalSamples = totalSamples;
+  
+  esp_err_t result = esp_now_send(peerMAC, (uint8_t *)&packet, sizeof(packet));
+  if (result != ESP_OK) {
+    errorMsg = "ESP-NOW rec send error";
+    errorActive = true;
+  }
+}
+
+// Optional: Callback for ESP‑NOW send events.
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  // You can log or process send status here if needed.
+}

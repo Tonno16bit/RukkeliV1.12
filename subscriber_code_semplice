@@ -1,1 +1,93 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Wire.h>
+#include <U8g2lib.h>
 
+// WiFi & MQTT settings
+const char* ssid         = "your_wifi_ssid";
+const char* wifiPassword = "your_wifi_password";
+const char* mqtt_server  = "YOUR_PUBLIC_IP_OR_DDNS";
+const int   mqtt_port    = 1883;
+const char* mqtt_user    = "your_username";
+const char* mqtt_pass    = "your_password";
+
+const char* topic        = "esp32/messages";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// Full-buffer constructor for 128x64 OLED using hardware I2C with SCL on pin 4, SDA on pin 3.
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, 4, 3);
+
+// MQTT callback: Called when a message is received.
+void callback(char* topic, byte* payload, unsigned int length) {
+  String message;
+  for (unsigned int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("]: ");
+  Serial.println(message);
+
+  // Update the OLED display with the received message.
+  u8g2.clearBuffer();                    
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  u8g2.drawStr(0, 20, "Received:");
+  u8g2.drawStr(0, 40, message.c_str());
+  u8g2.sendBuffer();
+}
+
+// Connect to WiFi
+void setupWiFi() {
+  Serial.print("Connecting to WiFi");
+  WiFi.begin(ssid, wifiPassword);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.print("WiFi connected! IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+// Ensure the MQTT client is connected.
+void reconnectMQTT() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    String clientId = "ESP32Sub-";
+    clientId += String(random(0xffff), HEX);
+    if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
+      Serial.println(" connected.");
+      client.subscribe(topic);
+    } else {
+      Serial.print(" failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" - retrying in 5 seconds.");
+      delay(5000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  setupWiFi();
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+  
+  // Initialize the full-buffer OLED display.
+  u8g2.begin();
+  delay(100);  // Allow some time for the display to initialize
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  u8g2.drawStr(0, 20, "Waiting for msg...");
+  u8g2.sendBuffer();
+}
+
+void loop() {
+  if (!client.connected()) {
+    reconnectMQTT();
+  }
+  client.loop();
+}

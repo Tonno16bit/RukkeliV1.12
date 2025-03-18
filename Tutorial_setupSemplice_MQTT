@@ -1,1 +1,2 @@
 https://copilot.microsoft.com/shares/p9SAqigS3y4QnauDyYF75
+"C:\Program Files\mosquitto\mosquitto.exe" -v -c "C:\mosquitto\mosquitto.conf"

@@ -1,0 +1,110 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <ESP32Servo.h>
+
+// Replace with your Wi-Fi credentials
+const char* ssid = "YOUR_SSID";
+const char* password = "YOUR_PASSWORD";
+
+// MQTT settings
+const char* mqtt_server = "151.49.177.182";
+const int   mqtt_port   = 1883;
+const char* mqtt_user   = "Tonno16bit";
+const char* mqtt_pass   = "987654321";
+const char* mqtt_topic  = "servo/angle";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+Servo servoMotor;
+const int servoPin = 5;  // Servo signal connected to pin 5
+
+// Global variables for smoothing using EMA
+float smoothedAngle = 90.0;  // Initial servo angle (mid-position)
+int targetAngle = 90;        // Latest target angle received from MQTT
+const float alpha = 0.3;     // EMA coefficient (adjust as necessary for responsiveness)
+
+// Connect to Wi-Fi
+void setup_wifi() {
+  delay(10);
+  Serial.println();
+  Serial.print("Connecting to Wi-Fi: ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWi-Fi connected, IP: " + WiFi.localIP().toString());
+}
+
+// MQTT callback: stores the received angle in the global target variable
+void callback(char* topic, byte* payload, unsigned int length) {
+  if (strcmp(topic, mqtt_topic) == 0) {
+    char msg[5];  // Buffer to hold the incoming angle (up to three digits)
+    if (length >= sizeof(msg))
+      length = sizeof(msg) - 1;
+    memcpy(msg, payload, length);
+    msg[length] = '\0';
+    
+    int received = atoi(msg);
+    received = constrain(received, 0, 180);
+    targetAngle = received;
+    Serial.print("Received target angle: ");
+    Serial.println(targetAngle);
+  }
+}
+
+// Reconnect to the MQTT server if needed
+void reconnectMQTT() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection from ESP32S3...");
+    String clientId = "ESP32S3_Client-";
+    clientId += String(random(0xffff), HEX);
+    if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
+      Serial.println(" connected.");
+      client.subscribe(mqtt_topic);
+    } else {
+      Serial.print(" failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" – retrying in 5 seconds.");
+      delay(5000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  setup_wifi();
+
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+
+  // Set up the servo using the ESP32Servo library
+  servoMotor.setPeriodHertz(50);           // Standard 50Hz servo frequency (20ms period)
+  servoMotor.attach(servoPin, 500, 2400);    // Typical pulse width range (500 - 2400 microseconds)
+  servoMotor.write(smoothedAngle);         // Start at the initial position
+}
+
+void loop() {
+  if (!client.connected()) {
+    reconnectMQTT();
+  }
+  client.loop();
+
+  // Update the smoothedAngle using EMA.
+  // This formula gradually moves smoothedAngle toward targetAngle.
+  smoothedAngle += alpha * (targetAngle - smoothedAngle);
+  int outputAngle = round(smoothedAngle);
+  
+  // Command the servo to move to the smoothed angle value.
+  servoMotor.write(outputAngle);
+
+  // Debug output
+  Serial.print("Smoothed angle: ");
+  Serial.print(smoothedAngle);
+  Serial.print(" -> Servo moved to: ");
+  Serial.println(outputAngle);
+
+  delay(20);  // Loop delay for a balance of responsiveness and system load
+}

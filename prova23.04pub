@@ -1,0 +1,123 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+
+// ----- WiFi & MQTT Settings -----
+const char* ssid = ";
+const char* wifiPassword = "";
+const char* mqtt_server = "151.71.99.171"; // Replace with your broker's IP address
+const int mqtt_port = 1883;
+const char* mqtt_user = "Tonno16bit";
+const char* mqtt_pass = "987654321";
+const char* pub_topic = "bethere";
+
+// ----- Pin Definitions -----
+const int potPin = 2;          // Potentiometer connected to analog pin 2
+const int buttonPin = 10;      // Button connected to digital pin 10
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// ----- Variables for Potentiometer & Dynamic Delay -----
+int lastPotValue = 0;
+const int minDelay = 300;   // Minimum delay in ms (for maximum change)
+const int maxDelay = 800;  // Maximum delay in ms (for little/no change)
+
+// ----- Variables for Button Debouncing -----
+int buttonState = HIGH;          // Current stable state
+int lastButtonReading = HIGH;    // Previous reading from the button pin
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 50;
+
+// ----- Servo Selection Variable -----
+int servoNum = 0;  // Starts at servo 0
+
+void setup_wifi() {
+  delay(10);
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  
+  WiFi.begin(ssid, wifiPassword);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  Serial.println("\nWiFi connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void reconnect() {
+  // Loop until we're reconnected to MQTT
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    if (client.connect("marco", mqtt_user, mqtt_pass)) {
+      Serial.println(" connected");
+    } else {
+      Serial.print(" failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" – retrying in 2 seconds");
+      delay(2000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(potPin, INPUT);
+  pinMode(buttonPin, INPUT_PULLUP);  // Use internal pull-up; button should connect to GND when pressed.
+  
+  setup_wifi();
+  client.setServer(mqtt_server, mqtt_port);
+  lastPotValue = analogRead(potPin);  // Take an initial value from the potentiometer.
+}
+
+void loop() {
+  // Ensure MQTT connection
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+  
+  // --- Read the Potentiometer ---
+  int potValue = analogRead(potPin);
+  int diff = abs(potValue - lastPotValue);
+  
+  // Linear mapping: greater difference means shorter delay (minDelay for max difference)
+  int sendDelay = maxDelay - (diff * (maxDelay - minDelay)) / 4095;
+  if (sendDelay < minDelay) sendDelay = minDelay;
+  if (sendDelay > maxDelay) sendDelay = maxDelay;
+
+  // --- Enhanced Button Debounce Logic ---
+  int reading = digitalRead(buttonPin);
+  
+  // If the reading changed, reset the debounce timer.
+  if (reading != lastButtonReading) {
+    lastDebounceTime = millis();
+  }
+  
+  // If the reading has been stable longer than the debounce period, update buttonState.
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    if (reading != buttonState) {
+      buttonState = reading;
+      // If the new stable state is LOW, the button has been pressed.
+      if (buttonState == LOW) {
+        servoNum = (servoNum + 1) % 16;  // Increment and wrap the servo number.
+        Serial.print("Button pressed. New servo number: ");
+        Serial.println(servoNum);
+      }
+    }
+  }
+  lastButtonReading = reading;
+  
+  // --- Form and Publish the Payload ---
+  // Payload format: "servo,position" (e.g., "3,2540")
+  String payload = String(servoNum) + "," + String(potValue);
+  client.publish(pub_topic, payload.c_str());
+  Serial.print("Published: ");
+  Serial.println(payload);
+  
+  lastPotValue = potValue;
+  delay(sendDelay);
+}

@@ -1,0 +1,140 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+
+// ----- WiFi & MQTT Settings -----
+const char* ssid = "Infostrada-2B7171_EXT";
+const char* wifiPassword = "";
+const char* mqtt_server = ""; // Replace with your broker's IP address
+const int mqtt_port = 1883;
+const char* mqtt_user = "Tonno16bit";
+const char* mqtt_pass = "987654321";
+const char* sub_topic = "bethere";
+
+// ----- Servo PWM Limits (modifiable) -----
+int servoMin = 150;  // Minimum pulse value
+int servoMax = 600;  // Maximum pulse value
+
+// ----- PCA9685 Setup -----
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// ----- Global Control Variables -----
+int targetPos = 0;     // Latest target position received (0–4095)
+int currentServo = 0;  // Currently active servo channel (0–15)
+float smoothedPos = 0.0;  // Filtered value for servo output
+
+// Timing for high refresh update (e.g., 20ms = 50Hz)
+unsigned long lastUpdate = 0;
+const unsigned long updateInterval = 20; // in milliseconds
+
+// ----- MQTT Callback Function -----
+// Expects a payload in the format "servo,position"
+void callback(char* topic, byte* payload, unsigned int length) {
+  String message;
+  for (unsigned int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  // Remove any extra whitespace/newlines from the payload
+  message.trim();
+  
+  Serial.print("Received message: ");
+  Serial.println(message);
+
+  int commaIndex = message.indexOf(',');
+  if (commaIndex == -1) {
+    Serial.println("Invalid message format!");
+    return;
+  }
+  
+  // Parse the servo number and potentiometer value
+  int newServo = message.substring(0, commaIndex).toInt();
+  int newPos = message.substring(commaIndex + 1).toInt();
+  
+  // If the servo number has changed, update it and reset smoothing
+  if (newServo != currentServo) {
+    currentServo = newServo;
+    smoothedPos = newPos;
+    Serial.print("Servo selection changed to: ");
+    Serial.println(currentServo);
+  }
+  targetPos = newPos;
+}
+
+void setup_wifi() {
+  delay(10);
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, wifiPassword);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void reconnect() {
+  // Loop until we're reconnected to MQTT
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    if (client.connect("polo", mqtt_user, mqtt_pass)) {
+      Serial.println(" connected");
+      client.subscribe(sub_topic);
+    } else {
+      Serial.print(" failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" – retrying in 2 seconds");
+      delay(2000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  pwm.begin();
+  pwm.setPWMFreq(50);  // Typical servo frequency (50Hz)
+
+  setup_wifi();
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+
+  // Initialize values
+  currentServo = 0;
+  targetPos = 0;
+  smoothedPos = 0;
+}
+
+void loop() {
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+  unsigned long now = millis();
+  if (now - lastUpdate >= updateInterval) {
+    lastUpdate = now;
+
+    // Apply exponential smoothing (0.05 new value, 0.95 old value)
+    smoothedPos = (0.05 * targetPos) + (0.95 * smoothedPos);
+
+    // Map the smoothed potentiometer value (0–4095) to the PWM pulse range (servoMin–servoMax)
+    int pwmVal = map((int)smoothedPos, 0, 4095, servoMin, servoMax);
+
+    // Update the PWM signal to the currently selected servo channel
+    pwm.setPWM(currentServo, 0, pwmVal);
+
+    Serial.print("Updated Servo ");
+    Serial.print(currentServo);
+    Serial.print(" to PWM value: ");
+    Serial.println(pwmVal);
+  }
+}

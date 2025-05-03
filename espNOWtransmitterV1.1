@@ -1,0 +1,126 @@
+#include <esp_now.h>
+#include <WiFi.h>
+
+// REPLACE WITH YOUR RECEIVER MAC Address
+uint8_t broadcastAddress[] = {0x48, 0x31, 0xb7, 0x58, 0x8d, 0x88};
+//48:31:b7:58:8d:88
+
+// Structure example to send data
+// Must match the receiver structure
+typedef struct struct_message {
+  int b[16];
+} struct_message;
+
+// Create a struct_message called payload
+struct_message payload;
+
+esp_now_peer_info_t peerInfo;
+
+ // Define multiplexer selection pins
+const int S0 = 38;
+const int S1 = 39;
+const int S2 = 40;
+const int S3 = 41;
+
+// Define the analog input pin connected to the multiplexer output (SIG)
+const int SIG_PIN = 4;
+
+// An array holding the select pins for easy looping
+const int controlPins[4] = { S0, S1, S2, S3 };
+
+// Define a lookup table for each of the 16 channels.
+// Each row corresponds to a channel (0 - 15) and the values set for S0, S1, S2, S3.
+int muxChannel[16][4] = {
+  {0, 0, 0, 0}, // Channel 0
+  {1, 0, 0, 0}, // Channel 1
+  {0, 1, 0, 0}, // Channel 2
+  {1, 1, 0, 0}, // Channel 3
+  {0, 0, 1, 0}, // Channel 4
+  {1, 0, 1, 0}, // Channel 5
+  {0, 1, 1, 0}, // Channel 6
+  {1, 1, 1, 0}, // Channel 7
+  {0, 0, 0, 1}, // Channel 8
+  {1, 0, 0, 1}, // Channel 9
+  {0, 1, 0, 1}, // Channel 10
+  {1, 1, 0, 1}, // Channel 11
+  {0, 0, 1, 1}, // Channel 12
+  {1, 0, 1, 1}, // Channel 13
+  {0, 1, 1, 1}, // Channel 14
+  {1, 1, 1, 1}  // Channel 15
+};
+
+// callback when data is sent
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  Serial.print("\r\nLast Packet Send Status:\t");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+}
+ 
+void setup() {
+  // Init Serial Monitor
+  Serial.begin(115200);
+ 
+  // Set device as a Wi-Fi Station
+  WiFi.mode(WIFI_STA);
+
+  // Init ESP-NOW
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+
+  // Once ESPNow is successfully Init, we will register for Send CB to
+  // get the status of Trasnmitted packet
+  esp_now_register_send_cb(OnDataSent);
+  
+  // Register peer
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  peerInfo.channel = 0;  
+  peerInfo.encrypt = false;
+  
+  // Add peer        
+  if (esp_now_add_peer(&peerInfo) != ESP_OK){
+    Serial.println("Failed to add peer");
+    return;
+  }
+  for (int i = 0; i < 4; i++) {
+    pinMode(controlPins[i], OUTPUT);
+    digitalWrite(controlPins[i], LOW);
+  }
+  pinMode(SIG_PIN, INPUT);
+}
+
+int readMuxChannel(int channel) {
+  // Set the multiplexer selection pins according to the lookup
+  for (int i = 0; i < 4; i++) {
+    digitalWrite(controlPins[i], muxChannel[channel][i]);
+  }
+  
+  // Optionally, a short delay allows the multiplexer to settle after switching channels
+  delayMicroseconds(5);
+  
+  // Read the analog value from the multiplexer output pin and return it
+  return analogRead(SIG_PIN);
+}
+void sendMessage(){
+  esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &payload, sizeof(payload));
+   
+  if (result == ESP_OK) {
+    Serial.println("Sent with success");
+  }
+  else {
+    Serial.println("Error sending the data");
+  }
+  return;
+}
+ 
+void loop() {
+  // Set values to send
+  for(int i=0;i<16;i++){
+    payload.b[i]=readMuxChannel(i);
+    delay(2);
+  }
+  
+  // Send message via ESP-NOW
+  sendMessage();
+  delay(38);//7ms totali di delay per lettura di ogni pot. 112ms lettura tutti i pot
+}

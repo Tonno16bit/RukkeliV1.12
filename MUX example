@@ -1,0 +1,73 @@
+ // Define multiplexer selection pins
+const int S0 = 38;
+const int S1 = 39;
+const int S2 = 40;
+const int S3 = 41;
+
+// Define the analog input pin connected to the multiplexer output (SIG)
+const int SIG_PIN = 4;
+
+// An array holding the select pins for easy looping
+const int controlPins[4] = { S0, S1, S2, S3 };
+
+// Define a lookup table for each of the 16 channels.
+// Each row corresponds to a channel (0 - 15) and the values set for S0, S1, S2, S3.
+int muxChannel[16][4] = {
+  {0, 0, 0, 0}, // Channel 0
+  {1, 0, 0, 0}, // Channel 1
+  {0, 1, 0, 0}, // Channel 2
+  {1, 1, 0, 0}, // Channel 3
+  {0, 0, 1, 0}, // Channel 4
+  {1, 0, 1, 0}, // Channel 5
+  {0, 1, 1, 0}, // Channel 6
+  {1, 1, 1, 0}, // Channel 7
+  {0, 0, 0, 1}, // Channel 8
+  {1, 0, 0, 1}, // Channel 9
+  {0, 1, 0, 1}, // Channel 10
+  {1, 1, 0, 1}, // Channel 11
+  {0, 0, 1, 1}, // Channel 12
+  {1, 0, 1, 1}, // Channel 13
+  {0, 1, 1, 1}, // Channel 14
+  {1, 1, 1, 1}  // Channel 15
+};
+
+void setup() {
+  // Initialize each control pin as an output and set LOW initially.
+  for (int i = 0; i < 4; i++) {
+    pinMode(controlPins[i], OUTPUT);
+    digitalWrite(controlPins[i], LOW);
+  }
+  pinMode(SIG_PIN, INPUT);
+
+}
+
+int readMuxChannel(int channel) {
+  // Set the multiplexer selection pins according to the lookup
+  for (int i = 0; i < 4; i++) {
+    digitalWrite(controlPins[i], muxChannel[channel][i]);
+  }
+  
+  // Optionally, a short delay allows the multiplexer to settle after switching channels
+  delayMicroseconds(5);
+  
+  // Read the analog value from the multiplexer output pin and return it
+  return analogRead(SIG_PIN);
+}
+
+void loop() {
+  // Loop through all 16 channels
+  for (int channel = 0; channel < 16; channel++) {
+    int sensorValue = readMuxChannel(channel);
+    //Serial.print("Channel ");
+    Serial.print(channel);
+    Serial.print(", ");
+    Serial.print(sensorValue);
+    
+    // Brief pause between channels
+    delay(2);
+  }
+  Serial.println("");
+  //Serial.println("------ End of cycle ------");
+  // Wait for a bit before reading all channels again
+  delay(20);
+}

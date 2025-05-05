@@ -1,0 +1,72 @@
+#include <esp_now.h>
+#include <WiFi.h>
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+#define SERVOMIN  150 // This is the 'minimum' pulse length count (out of 4096)
+#define SERVOMAX  600 // This is the 'maximum' pulse length count (out of 4096)
+#define SERVO_FREQ 50 // Analog servos run at ~50 Hz updates
+
+// Structure example to receive data
+// Must match the sender structure
+typedef struct struct_message {
+  int b[16];
+} struct_message;
+
+// Create a struct_message called myData
+struct_message myData;
+
+// callback function that will be executed when data is received
+void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
+  memcpy(&myData, incomingData, sizeof(myData));
+  /*for(int i=0;i<16;i++){
+    pwm.setPWM(i, 0, map(myData.b[i], 0,4096, 150, 600));
+  }*/
+}
+ 
+void setup() {
+  // Initialize Serial Monitor
+  Serial.begin(115200);
+  /*PCA9685 INITIALIZATION*/
+  pwm.begin();
+    /*
+   * In theory the internal oscillator (clock) is 25MHz but it really isn't
+   * that precise. You can 'calibrate' this by tweaking this number until
+   * you get the PWM update frequency you're expecting!
+   * The int.osc. for the PCA9685 chip is a range between about 23-27MHz and
+   * is used for calculating things like writeMicroseconds()
+   * Analog servos run at ~50 Hz updates, It is importaint to use an
+   * oscilloscope in setting the int.osc frequency for the I2C PCA9685 chip.
+   * 1) Attach the oscilloscope to one of the PWM signal pins and ground on
+   *    the I2C PCA9685 chip you are setting the value for.
+   * 2) Adjust setOscillatorFrequency() until the PWM update frequency is the
+   *    expected value (50Hz for most ESCs)
+   * Setting the value here is specific to each individual I2C PCA9685 chip and
+   * affects the calculations for the PWM update frequency. 
+   * Failure to correctly set the int.osc value will cause unexpected PWM results
+   */
+  pwm.setOscillatorFrequency(27000000);
+  pwm.setPWMFreq(SERVO_FREQ);  // Analog servos run at ~50 Hz updates
+
+  delay(10); // giving it time to settle
+
+  /*ESPNOW INIZIATIZATION*/
+  // Set device as a Wi-Fi Station
+  WiFi.mode(WIFI_STA);
+
+  // Init ESP-NOW
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+  
+  // Once ESPNow is successfully Init, we will register for recv CB to
+  // get recv packer info
+  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));
+}
+ 
+void loop() {
+  
+  delay(100);
+}
